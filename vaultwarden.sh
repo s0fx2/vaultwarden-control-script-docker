@@ -1,5 +1,19 @@
 #!/bin/bash
 
+# Global variables
+MIRROR_SERVER="docker.unsee.tech"
+USE_MIRROR=false
+ORIGINAL_IMAGE="vaultwarden/server:latest"
+MIRROR_IMAGE="${MIRROR_SERVER}/vaultwarden/server:latest"
+
+# Default configuration
+DOMAIN="localhost"
+PORT="5002"
+SMTP_HOST=""
+SMTP_FROM=""
+SMTP_USERNAME=""
+SMTP_PASSWORD=""
+
 # Function to print logo
 print_logo() {
     echo -e "\033[34m"
@@ -16,7 +30,7 @@ EOF
 
 # Function to print help message
 print_help() {
-    echo "Usage: $0 [command]"
+    echo "Usage: $0 [command] [options]"
     echo
     echo "Commands:"
     echo "  install  Pull latest Vaultwarden image"
@@ -24,17 +38,51 @@ print_help() {
     echo "  stop     Stop and remove Vaultwarden container"
     echo "  restart  Restart Vaultwarden container (stop and start)"
     echo
+    echo "Options:"
+    echo "  -m, --mirror    Use mirror server (${MIRROR_SERVER}) for pulling images"
+    echo
     echo "Example:"
-    echo "  $0 install  # Pull latest Vaultwarden image"
-    echo "  $0 start    # Start Vaultwarden service"
-    echo "  $0 stop     # Stop Vaultwarden service"
-    echo "  $0 restart  # Restart Vaultwarden service"
+    echo "  $0 install              # Pull from official registry"
+    echo "  $0 install --mirror     # Pull from mirror registry"
+    echo "  $0 start               # Start Vaultwarden service"
+    echo "  $0 start --mirror      # Start Vaultwarden service using mirror image"
+}
+
+# Function to parse command line arguments
+parse_args() {
+    while [[ "$#" -gt 0 ]]; do
+        case $1 in
+            -m|--mirror)
+                USE_MIRROR=true
+                shift
+                ;;
+            install|start|stop|restart)
+                COMMAND="$1"
+                shift
+                ;;
+            *)
+                echo "Unknown parameter: $1"
+                print_help
+                exit 1
+                ;;
+        esac
+    done
+}
+
+# Function to get current image name
+get_image_name() {
+    if [ "$USE_MIRROR" = true ]; then
+        echo "${MIRROR_IMAGE}"
+    else
+        echo "${ORIGINAL_IMAGE}"
+    fi
 }
 
 # Function to install container image
 install_container() {
-    echo "Pulling latest Vaultwarden image..."
-    if docker pull vaultwarden/server:latest; then
+    local image_name=$(get_image_name)
+    echo "Pulling latest Vaultwarden image from $([ "$USE_MIRROR" = true ] && echo "mirror: ${MIRROR_SERVER}" || echo "official registry")..."
+    if docker pull ${image_name}; then
         echo -e "\033[32m✔ Vaultwarden image pulled successfully!\033[0m"
     else
         echo -e "\033[31m✘ Failed to pull Vaultwarden image. Please check your network connection.\033[0m"
@@ -62,29 +110,44 @@ start_container() {
         docker rm vaultwarden
     fi
 
-    echo "Starting Vaultwarden service..."
-    docker run -d --name vaultwarden \
-        -e ROCKET_TLS='{certs="/ssl/server.cer",key="/ssl/private.key"}' \
-        -e DOMAIN=https://<your-domain>:8443 \
-        -e SIGNUPS_ALLOWED=true \
-        -e SMTP_HOST=<your-smtp-host> \
-        -e SMTP_FROM=<your-email> \
-        -e SMTP_FROM_NAME=Vaultwarden \
-        -e SMTP_SECURITY=starttls \
-        -e SMTP_PORT=587 \
-        -e SMTP_USERNAME=<your-smtp-username> \
-        -e SMTP_PASSWORD=<your-smtp-password> \
-        -e SMTP_TIMEOUT=15 \
-        -v ./ssl/:/ssl/ \
-        -v ./vwdata/:/data/ \
-        -p <your-port>:80 \
-	    --restart=always \
-        vaultwarden/server:latest
+    local image_name=$(get_image_name)
+    echo "Starting Vaultwarden service using image: ${image_name}..."
+    
+    # 如果没有配置SMTP，则不添加SMTP相关环境变量
+    if [ -z "$SMTP_HOST" ]; then
+        docker run -d --name vaultwarden \
+            -e ROCKET_TLS='{certs="/ssl/server.cer",key="/ssl/private.key"}' \
+            -e DOMAIN="https://${DOMAIN}:${PORT}" \
+            -e SIGNUPS_ALLOWED=false \
+            -v ./ssl/:/ssl/ \
+            -v ./vwdata/:/data/ \
+            -p ${PORT}:80 \
+            --restart=always \
+            ${image_name}
+    else
+        docker run -d --name vaultwarden \
+            -e ROCKET_TLS='{certs="/ssl/server.cer",key="/ssl/private.key"}' \
+            -e DOMAIN="https://${DOMAIN}:${PORT}" \
+            -e SIGNUPS_ALLOWED=false \
+            -e SMTP_HOST="${SMTP_HOST}" \
+            -e SMTP_FROM="${SMTP_FROM}" \
+            -e SMTP_FROM_NAME="Vaultwarden" \
+            -e SMTP_SECURITY=starttls \
+            -e SMTP_PORT=587 \
+            -e SMTP_USERNAME="${SMTP_USERNAME}" \
+            -e SMTP_PASSWORD="${SMTP_PASSWORD}" \
+            -e SMTP_TIMEOUT=15 \
+            -v ./ssl/:/ssl/ \
+            -v ./vwdata/:/data/ \
+            -p ${PORT}:80 \
+            --restart=always \
+            ${image_name}
+    fi
 
     # Check if container started successfully
     if [ $? -eq 0 ]; then
         echo -e "\033[32m✔ Vaultwarden service started successfully!\033[0m"
-        echo "Access URL: https://localhost:8443"
+        echo "Access URL: https://${DOMAIN}:${PORT}"
     else
         echo -e "\033[31m✘ Vaultwarden service failed to start. Please check error messages.\033[0m"
     fi
@@ -113,7 +176,10 @@ restart_container() {
 }
 
 # Main script logic
-case "$1" in
+COMMAND=""
+parse_args "$@"
+
+case "${COMMAND}" in
     "install")
         print_logo
         install_container
